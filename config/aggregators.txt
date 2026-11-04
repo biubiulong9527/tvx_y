@@ -1,4 +1,4 @@
-# ============================================================
+﻿# ============================================================
 #  候选池：会从这些"公共聚合配置"里自动抽取可直连的 CMS 站点
 # ============================================================
 #  构建时脚本会抓取下面每个 URL，解析其中的 sites 数组，
@@ -44,6 +44,11 @@ ysc-wangerxiao  | https://raw.githubusercontent.com/Lightconer/tvbox-ysc-config/
 ysc-laoliubei   | https://raw.githubusercontent.com/Lightconer/tvbox-ysc-config/main/output/laoliubei.json
 ysc-tinghao     | https://raw.githubusercontent.com/Lightconer/tvbox-ysc-config/main/output/tinghao.json
 ysc-all         | https://raw.githubusercontent.com/Lightconer/tvbox-ysc-config/main/output/单仓聚合.json
+
+# ---- 带 // 注释头的配置（解析器已支持剥离注释）----
+laoliubei   | https://raw.liucn.cc/box/m.json
+hezi4k      | http://xhztv.top/4k.json
+hezixhz     | http://xhztv.top/xhz
 
 # ---- 直接的单源地址（能拉到就直接解析）----
 # 注意：域名经常变，挂了不影响构建，只是这个池子暂时没货

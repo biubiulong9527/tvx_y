@@ -67,6 +67,11 @@ TIMEOUT_DISCOVERY = 20      # 抓聚合配置
 TIMEOUT_LIST = 12           # 站点分类列表
 TIMEOUT_SEARCH = 15         # 站点搜索
 TIMEOUT_DETAIL = 15         # 站点详情/播放链
+TIMEOUT_PLAY = 15           # 实测拉 m3u8（视频 CDN 比 API 慢，给足）
+
+# 是否实测播放。开启后会真正拉一次 m3u8 验证能不能播，
+# 代价是体检变慢，收益是直接把"死链站"挡在门外。
+PLAY_TEST = True
 
 MAX_BYTES = 8 * 1024 * 1024  # 单个响应最多读 8MB，防止被巨型响应拖死
 
@@ -167,7 +172,15 @@ def fetch_config(url: str, timeout: int = TIMEOUT_DISCOVERY) -> tuple[Any, str]:
 
 
 def json_maybe(raw: bytes | None) -> Any:
-    """尽量把响应解析成 JSON。处理 BOM / 前后杂质 / GBK 之类。"""
+    """
+    尽量把响应解析成 JSON。
+
+    TVBox 生态里大量配置是"非严格 JSON"，必须容错：
+      * 开头有 // 整行注释（老刘备、盒子迷这类很常见）
+      * 字段里混入未转义的控制字符
+      * 前后有 BOM / <script> / 空白杂质
+    解析失败会直接导致整份配置被丢弃，候选人头白丢，所以这里要尽量宽。
+    """
     if not raw:
         return None
     for enc in ("utf-8-sig", "utf-8", "gb18030"):
@@ -178,24 +191,43 @@ def json_maybe(raw: bytes | None) -> Any:
         text = text.strip()
         if not text:
             return None
-        # 有些站会在 JSON 前后塞 <script> / BOM / 空白
-        if not text.startswith(("{", "[")):
-            m = re.search(r"[\[{]", text)
-            if not m:
-                return None
-            text = text[m.start():]
-        try:
-            return json.loads(text)
-        except Exception:
-            # 兜底：截到最后一个 } 或 ]
+
+        # 尝试多种候选文本形态，从"原样"到"清洗过的"
+        candidates = [text]
+
+        # 1) 去掉 // 整行注释（只去掉行首就是 // 的，避免破坏 URL 里的 //）
+        if "//" in text:
+            stripped = "\n".join(
+                ln for ln in text.splitlines() if not ln.lstrip().startswith("//")
+            )
+            if stripped != text:
+                candidates.append(stripped)
+
+        # 2) 定位 JSON 起点（跳过注释和杂质）
+        for base in list(candidates):
+            if not base.lstrip().startswith(("{", "[")):
+                m = re.search(r"[\[{]", base)
+                if m:
+                    candidates.append(base[m.start():])
+
+        for cand in candidates:
+            cand = cand.strip()
+            if not cand:
+                continue
+            # 先严格，再宽松（strict=False 允许字符串里有裸控制字符）
+            for strict in (True, False):
+                try:
+                    return json.loads(cand, strict=strict)
+                except Exception:
+                    pass
+            # 3) 兜底：截到最后一个 } 或 ]
             for close in ("}", "]"):
-                idx = text.rfind(close)
+                idx = cand.rfind(close)
                 if idx > 0:
                     try:
-                        return json.loads(text[: idx + 1])
+                        return json.loads(cand[: idx + 1], strict=False)
                     except Exception:
                         pass
-            continue
     return None
 
 
@@ -591,7 +623,7 @@ class Probe:
 
     __slots__ = (
         "api", "name", "origin", "ok", "score", "reason",
-        "latency_ms", "categories", "sample", "has_search", "detail_ok", "episodes",
+        "latency_ms", "categories", "sample", "has_search", "detail_ok", "episodes", "play_ok",
         "fingerprint",
     )
 
@@ -608,6 +640,7 @@ class Probe:
         self.has_search = False
         self.detail_ok = False
         self.episodes = 0
+        self.play_ok = False
         self.fingerprint = ""
 
 
@@ -638,6 +671,39 @@ def http_get_retry(
         if i + 1 < attempts:
             time.sleep(0.6 + random.random() * 0.6)
     return None
+
+
+def verify_playable(urls: list[str], attempts: int = 3) -> bool:
+    """
+    真正拉一次播放地址，确认它返回的是 m3u8 内容。
+
+    为什么必须做这件事：CMS 站点返回的 vod_play_url 经常是
+      * 已经下线的死链
+      * 返回 HTML 错误页 / 广告页
+      * 需要 Referer 才给内容
+    只看"有没有地址"会严重高估可用性，用户点进去就是黑屏。
+    """
+    ua_variants = [None, "okhttp/3.12.13", "Lavf/58.29.100"]
+    checked = 0
+    for u in urls:
+        if checked >= attempts:
+            break
+        # 只测看起来像视频清单的地址，图片/字幕跳过
+        if not re.search(r"\.(m3u8|mp4|m3u)(\?|$)", u, re.I):
+            continue
+        checked += 1
+        for ua in ua_variants:
+            raw = http_get(u, timeout=TIMEOUT_PLAY, ua=ua)
+            if not raw:
+                continue
+            # 合法的 HLS 清单一定以 #EXTM3U 开头
+            if raw.lstrip()[:7] == b"#EXTM3U":
+                return True
+            head = raw[:200].decode("utf-8", "replace")
+            # 有些是直链 MP4：能拿到二进制且不是 HTML 也算可播
+            if ".mp4" in u.lower() and "<html" not in head.lower():
+                return True
+    return False
 
 
 def probe_site(api: str, name: str, origin: str) -> Probe:
@@ -704,20 +770,23 @@ def probe_site(api: str, name: str, origin: str) -> Probe:
     lst4 = _vod_list(json_maybe(raw4))
     p.has_search = bool(lst4)
 
-    # ---- 第四步：详情/播放链 ----
+    # ---- 第四步：详情/播放链，并实测能否真的拉到视频 ----
     vid = first.get("vod_id") or first.get("id")
     if vid:
         raw5 = http_get_retry(f"{api}?ac=detail&ids={vid}", timeout=TIMEOUT_DETAIL)
         detail = _vod_list(json_maybe(raw5))
         if detail:
             p.detail_ok = True
-            for key in ("vod_play_url", "vod_play_from"):
-                v = detail[0].get(key)
-                if isinstance(v, str) and v.strip():
-                    if key == "vod_play_url":
-                        # 数一下 m3u8 条数
-                        p.episodes = len(re.findall(r"https?://[^\s#$]+", v))
-                    break
+            v = detail[0].get("vod_play_url")
+            if isinstance(v, str) and v.strip():
+                urls = re.findall(r"(https?://[^\s#$]+)", v)
+                p.episodes = len(urls)
+
+                # 关键一步：真正拉一次 m3u8。
+                # 以前只统计"有没有地址"，但很多站给的地址是死链、
+                # 或者返回 HTML 错误页——这才是用户看到"不能用"的根源。
+                if urls and PLAY_TEST:
+                    p.play_ok = verify_playable(urls)
 
     # ---- 打分 ----
     score = 0.0
@@ -726,6 +795,7 @@ def probe_site(api: str, name: str, origin: str) -> Probe:
     score += 15 if p.has_search else 0              # 能搜
     score += 15 if p.detail_ok else 0               # 详情可用
     score += 10 if p.episodes > 0 else 0            # 有播放链
+    score += 25 if p.play_ok else 0                 # 实测能播（权重最高）
     score += max(0, 10 - p.latency_ms / 1000)       # 响应快
     if total > 1000:
         score += 5
@@ -734,14 +804,27 @@ def probe_site(api: str, name: str, origin: str) -> Probe:
     # 片库指纹：用于识别"同一片库换了域名"的镜像站
     p.fingerprint = "|".join(sorted(p.categories))[:200]
 
-    # 通过标准必须严格：能搜 或 有播放链，二者至少有一个。
-    # 只回列表、拿不到任何播放地址的站，TVBox 里点进去就是空白。
-    p.ok = bool(lst2) and (p.has_search or p.episodes > 0)
-    if not p.ok:
-        if not p.has_search and p.episodes == 0:
-            p.reason = "仅能返回列表，搜不到也拿不到播放链"
-        else:
-            p.reason = "片库可用但搜索/详情均失败"
+    # ---- 通过标准 ----
+    # 只有"能搜到"是不够的：用户点进去放不出来等于不能用。
+    # 所以只要开启了播放实测，就必须真的拉到过 m3u8 才算通过。
+    if PLAY_TEST:
+        p.ok = bool(lst2) and p.play_ok
+        if not p.ok:
+            if not lst2:
+                p.reason = "片库为空"
+            elif not p.detail_ok:
+                p.reason = "拿不到详情"
+            elif p.episodes == 0:
+                p.reason = "没有播放地址"
+            else:
+                p.reason = "播放地址实测拉不到 m3u8（死链）"
+    else:
+        p.ok = bool(lst2) and (p.has_search or p.episodes > 0)
+        if not p.ok:
+            if not p.has_search and p.episodes == 0:
+                p.reason = "仅能返回列表，搜不到也拿不到播放链"
+            else:
+                p.reason = "片库可用但搜索/详情均失败"
     return p
 
 
