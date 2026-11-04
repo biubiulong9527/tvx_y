@@ -1068,52 +1068,84 @@ def sha256_file(path: str) -> str:
 
 # ---------------------------------------------------------------- 完整版（带 jar）
 
-# 每个提供方 -> (配置地址, 配套 jar 地址)
+# 每个提供方 -> (配置地址, jar 覆盖地址或空串)
 # 铁律：type=3 站点的 api 是 jar 内的类名（csp_Xxx），
-#       必须用该提供方自己的 jar，混用会导致站点全部失效。
+#       必须用该提供方自己的 jar，混用会让站点引用不存在的类而全部失效。
+# jar 覆盖地址留空表示"用配置自带的 spider 字段"。
 FULL_GROUPS: dict[str, tuple[str, str]] = {
-    "盒子迷xhz": ("http://xhztv.top/xhz", "http://xhztv.top/xhz/Yoursmile.jar"),
-    "盒子迷4K": ("http://xhztv.top/4k.json", ""),
+    # 肥猫：官方域名已停放/引流，改用社区镜像（jar md5 与配置内一致）
+    "肥猫": (
+        "https://raw.githubusercontent.com/Lightconer/tvbox-ysc-config/main/output/feimao.json",
+        "",
+    ),
+    # 老刘备：配置里写的是相对路径 ./fty.jar，必须解析成绝对地址，
+    # 否则 TVBox 会把它解析到本仓库域名下，必然 404。
+    "老刘备": (
+        "https://raw.liucn.cc/box/m.json",
+        "",
+    ),
+    "盒子迷xhz": (
+        "http://xhztv.top/xhz",
+        "",
+    ),
+    "盒子迷4K": (
+        "http://xhztv.top/4k.json",
+        "",
+    ),
 }
 
 
-def build_full_configs(now: datetime) -> list[tuple[str, dict[str, Any], list[str]]]:
+def resolve_jar(cfg_url: str, raw: str) -> tuple[str, str]:
     """
-    为每个提供方单独生成一份带 jar 的完整版配置。
-    返回 [(文件名前缀, 配置, 说明)]。
+    把配置里的 spider 值拆成 (可用的绝对地址, md5)。
+    处理三种情况：
+      * 绝对 URL，可能带 ;md5;xxx
+      * 相对路径 ./fty.jar（相对配置文件所在目录）
+      * 空值
     """
-    out: list[tuple[str, dict[str, Any], list[str]]] = []
+    raw = (raw or "").strip()
+    if not raw:
+        return "", ""
+    url, md5 = raw, ""
+    if ";md5;" in raw:
+        url, md5 = raw.split(";md5;", 1)
+        url, md5 = url.strip(), md5.strip().lower()
+    # 相对路径解析为绝对地址
+    if not url.startswith(("http://", "https://")):
+        url = urllib.parse.urljoin(cfg_url, url)
+    return url, md5
 
-    for prov, (cfg_url, jar_url) in FULL_GROUPS.items():
+
+def build_full_configs(now: datetime) -> list[tuple[str, dict[str, Any] | None, list[str]]]:
+    """为每个提供方单独生成一份带 jar 的完整版配置。"""
+    out: list[tuple[str, dict[str, Any] | None, list[str]]] = []
+
+    for prov, (cfg_url, jar_override) in FULL_GROUPS.items():
         notes: list[str] = []
         obj, real = fetch_config(cfg_url)
         if obj is None:
-            out.append((prov, None, [f"{prov}: 配置拉取失败"]))
+            out.append((prov, None, [f"配置拉取失败：{cfg_url}"]))
             continue
 
-        own_jar = str(obj.get("spider") or "").strip()
         sites = obj.get("sites") or []
         t3 = [s for s in sites if isinstance(s, dict) and str(s.get("type")) == "3"]
         if not t3:
-            out.append((prov, None, [f"{prov}: 无 type=3 站点"]))
+            out.append((prov, None, [f"无 type=3 站点（sites={len(sites)}）"]))
             continue
 
-        # jar 优先用显式指定的，否则用配置自带的（必须存在且是 http/相对路径）
-        jar = jar_url or own_jar
-        if not jar:
-            out.append((prov, None, [f"{prov}: 无可用 jar，跳过其 {len(t3)} 个站点"]))
+        jar_url, jar_md5 = resolve_jar(cfg_url, jar_override or str(obj.get("spider") or ""))
+        if not jar_url:
+            out.append((prov, None, [f"配置未声明 jar，跳过其 {len(t3)} 个站点"]))
             continue
-
-        # 如果用的是该配置自带的 jar，保留它自带的 md5 校验
-        if not jar_url and own_jar:
-            jar = own_jar
 
         used_keys: set[str] = set()
         built: list[dict[str, Any]] = []
+        skipped = 0
         for s in t3:
             api = str(s.get("api") or "").strip()
             name = str(s.get("name") or "").strip()
             if not api or not name:
+                skipped += 1
                 continue
             key = safe_key(f"{prov}{name}") or "s"
             while key in used_keys:
@@ -1133,11 +1165,12 @@ def build_full_configs(now: datetime) -> list[tuple[str, dict[str, Any], list[st
             built.append(site)
 
         if not built:
-            out.append((prov, None, [f"{prov}: type=3 站点字段不全"]))
+            out.append((prov, None, ["type=3 站点字段不全"]))
             continue
 
+        spider_value = f"{jar_url};md5;{jar_md5}" if jar_md5 else jar_url
         cfg = {
-            "spider": jar,
+            "spider": spider_value,
             "sites": built,
             "parses": [],
             "flags": [],
@@ -1148,15 +1181,20 @@ def build_full_configs(now: datetime) -> list[tuple[str, dict[str, Any], list[st
             "_meta": {
                 "generator": "tvbox-selfbuild-full",
                 "source_provider": prov,
+                "source_config": cfg_url,
+                "jar": jar_url,
+                "jar_md5": jar_md5 or "未声明",
                 "built_at": now.astimezone(CST).isoformat(timespec="seconds"),
                 "site_count": len(built),
                 "note": f"完整版（带 jar）· 来源 {prov} · {len(built)} 个 type=3 站点",
-                "warning": "本文件挂载了 spider.jar。jar 地址一旦失效，"
-                           "整份配置的所有站点都会不可用（白屏）。"
-                           "日常请优先使用 dist/tvbox.json（免 jar 版）。",
+                "warning": ("本文件挂载了 spider.jar。jar 地址一旦失效，"
+                            "整份配置所有站点都会不可用（白屏）。"
+                            "日常请优先使用 dist/tvbox.json（免 jar 版）。"),
             },
         }
-        notes.append(f"{prov}: {len(built)} 个 type=3 站点，jar={jar[:70]}")
+        notes.append(f"{len(built)} 个 type=3 站点，jar={jar_url}")
+        if skipped:
+            notes.append(f"跳过 {skipped} 个字段不全的站点")
         out.append((prov, cfg, notes))
 
     return out
