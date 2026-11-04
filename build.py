@@ -102,6 +102,33 @@ class Log:
 log = Log()
 
 
+def idna_url(url: str) -> str:
+    """
+    把中文域名和中文路径转成可直接请求的形式。
+
+    这是之前最大的隐藏 bug：肥猫/饭太硬/盒子迷这些源的域名和路径大量是中文，
+    而 urllib 的底层只接受 ASCII，会直接抛 UnicodeEncodeError，
+    导致这些源在探测阶段就被判"拉取失败"，实际上根本没发出请求。
+    """
+    try:
+        p = urllib.parse.urlsplit(url)
+        host = p.hostname
+        if not host:
+            return url
+        try:
+            ascii_host = host.encode("idna").decode("ascii")
+        except Exception:
+            ascii_host = host
+        netloc = ascii_host
+        if p.port:
+            netloc += ":" + str(p.port)
+        path = urllib.parse.quote(p.path or "/", safe="/%")
+        query = urllib.parse.quote(p.query, safe="=&%")
+        return urllib.parse.urlunsplit((p.scheme or "http", netloc, path, query, ""))
+    except Exception:
+        return url
+
+
 def http_get(
     url: str,
     timeout: int = TIMEOUT_LIST,
@@ -117,7 +144,7 @@ def http_get(
     }
     if headers:
         h.update(headers)
-    req = urllib.request.Request(url, headers=h)
+    req = urllib.request.Request(idna_url(url), headers=h)
     try:
         ctx = ssl.create_default_context()
         ctx.check_hostname = False
@@ -807,6 +834,8 @@ def probe_site(api: str, name: str, origin: str) -> Probe:
     # ---- 通过标准 ----
     # 只有"能搜到"是不够的：用户点进去放不出来等于不能用。
     # 所以只要开启了播放实测，就必须真的拉到过 m3u8 才算通过。
+    # 注意：如果连列表都拿不到（网络层就失败），那是"未验证"而非"已死"，
+    # 交给上层决定是否保留上次的结论，不能直接当死链丢掉。
     if PLAY_TEST:
         p.ok = bool(lst2) and p.play_ok
         if not p.ok:
@@ -953,10 +982,10 @@ def build_config(
         # 刻意不写 spider 字段：纯 type=1 直连 CMS，
         # 省掉 spider.jar 这个最容易失效、也最容易导致白屏的环节。
         "sites": sites,
-        "parses": [
-            {"name": "Web解析", "type": 0, "url": "https://jx.m3u8.tv/jx/jx.php?url="},
-            {"name": "Json聚合", "type": 3, "url": "Demo"},
-        ],
+        # 刻意留空：本配置全部是直连 CMS，播放不需要解析。
+        # 之前放的两个解析地址一个已失效、一个是占位符 "Demo"，
+        # 反而会在需要解析时误导 TVBox，造成"能搜到但点开黑屏"。
+        "parses": [],
         "flags": [
             "电影", "电视剧", "综艺", "动漫", "纪录片", "短剧",
             "国产剧", "香港剧", "台湾剧", "日韩剧", "欧美剧", "海外剧",
@@ -1037,6 +1066,102 @@ def sha256_file(path: str) -> str:
     return h.hexdigest()
 
 
+# ---------------------------------------------------------------- 完整版（带 jar）
+
+# 每个提供方 -> (配置地址, 配套 jar 地址)
+# 铁律：type=3 站点的 api 是 jar 内的类名（csp_Xxx），
+#       必须用该提供方自己的 jar，混用会导致站点全部失效。
+FULL_GROUPS: dict[str, tuple[str, str]] = {
+    "盒子迷xhz": ("http://xhztv.top/xhz", "http://xhztv.top/xhz/Yoursmile.jar"),
+    "盒子迷4K": ("http://xhztv.top/4k.json", ""),
+}
+
+
+def build_full_configs(now: datetime) -> list[tuple[str, dict[str, Any], list[str]]]:
+    """
+    为每个提供方单独生成一份带 jar 的完整版配置。
+    返回 [(文件名前缀, 配置, 说明)]。
+    """
+    out: list[tuple[str, dict[str, Any], list[str]]] = []
+
+    for prov, (cfg_url, jar_url) in FULL_GROUPS.items():
+        notes: list[str] = []
+        obj, real = fetch_config(cfg_url)
+        if obj is None:
+            out.append((prov, None, [f"{prov}: 配置拉取失败"]))
+            continue
+
+        own_jar = str(obj.get("spider") or "").strip()
+        sites = obj.get("sites") or []
+        t3 = [s for s in sites if isinstance(s, dict) and str(s.get("type")) == "3"]
+        if not t3:
+            out.append((prov, None, [f"{prov}: 无 type=3 站点"]))
+            continue
+
+        # jar 优先用显式指定的，否则用配置自带的（必须存在且是 http/相对路径）
+        jar = jar_url or own_jar
+        if not jar:
+            out.append((prov, None, [f"{prov}: 无可用 jar，跳过其 {len(t3)} 个站点"]))
+            continue
+
+        # 如果用的是该配置自带的 jar，保留它自带的 md5 校验
+        if not jar_url and own_jar:
+            jar = own_jar
+
+        used_keys: set[str] = set()
+        built: list[dict[str, Any]] = []
+        for s in t3:
+            api = str(s.get("api") or "").strip()
+            name = str(s.get("name") or "").strip()
+            if not api or not name:
+                continue
+            key = safe_key(f"{prov}{name}") or "s"
+            while key in used_keys:
+                key += "x"
+            used_keys.add(key)
+            site: dict[str, Any] = {
+                "key": key,
+                "name": f"{CATEGORY_PREFIX} · {name}",
+                "type": 3,
+                "api": api,
+                "searchable": 1,
+                "quickSearch": 1,
+                "filterable": 1,
+            }
+            if s.get("ext"):
+                site["ext"] = s["ext"]
+            built.append(site)
+
+        if not built:
+            out.append((prov, None, [f"{prov}: type=3 站点字段不全"]))
+            continue
+
+        cfg = {
+            "spider": jar,
+            "sites": built,
+            "parses": [],
+            "flags": [],
+            "ijk": {"mediaCodec": 0, "opensles": 0, "soundTouch": 1},
+            "ads": [],
+            "rules": [],
+            "headers": [],
+            "_meta": {
+                "generator": "tvbox-selfbuild-full",
+                "source_provider": prov,
+                "built_at": now.astimezone(CST).isoformat(timespec="seconds"),
+                "site_count": len(built),
+                "note": f"完整版（带 jar）· 来源 {prov} · {len(built)} 个 type=3 站点",
+                "warning": "本文件挂载了 spider.jar。jar 地址一旦失效，"
+                           "整份配置的所有站点都会不可用（白屏）。"
+                           "日常请优先使用 dist/tvbox.json（免 jar 版）。",
+            },
+        }
+        notes.append(f"{prov}: {len(built)} 个 type=3 站点，jar={jar[:70]}")
+        out.append((prov, cfg, notes))
+
+    return out
+
+
 # ---------------------------------------------------------------- 主流程
 
 def main() -> int:
@@ -1112,12 +1237,20 @@ def main() -> int:
     status = build_status(probes, alive, now)
     write_json(os.path.join(OUTPUT_DIR, "status.json"), status, pretty=True)
 
-    log(f"已写出：{out_main}")
-    log(f"        {out_slim}")
-    log(f"        {os.path.join(OUTPUT_DIR, 'status.json')}")
-    log(f"sha256(tvbox.json) = {sha256_file(out_main)}")
-    log(f"存活 {len(alive)} 个站点，其中种子 "
-        f"{sum(1 for p in alive if p.api in seeds_apis)} 个")
+    # ---- 完整版（带 jar）----
+    # 每个提供方单独一个文件：jar 与站点必须配套，
+    # 混在一起挂错 jar 会导致整份配置的站点全部失效。
+    for prov, full_cfg, notes in build_full_configs(now):
+        if not full_cfg:
+            log(f"完整版[{prov}] 未生成：{'；'.join(notes)}")
+            continue
+        fname = f"tvbox-full-{prov}.json"
+        out_full = os.path.join(OUTPUT_DIR, fname)
+        write_json(out_full, full_cfg)
+        log(f"已写出完整版：{fname}（{full_cfg['_meta']['site_count']} 个 jar 站点）")
+        for n in notes:
+            log(f"    {n}")
+
     log("构建完成 ✔")
     return 0
 
