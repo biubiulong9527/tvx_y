@@ -26,7 +26,20 @@ porn
 jav
 sehuatang
 btbtt
+danaizi
+fhapi
+lbapi
+hsck
+shayuapi
+apidanaizi
 
+# 常见番号/车牌类域名片段
+av1
+av2
+av9
+66av
+99av
+av77
 # ---- 成人内容站（站名特征）----
 黑料
 香奶
@@ -38,6 +51,18 @@ btbtt
 麻豆
 果冻
 蜜桃
+奶子
+番号
+福利
+里番
+无修
+人妻
+丝袜
+少妇
+巨乳
+自慰
+约炮
+嫖
 
 # ---- 明显是盗号/钓鱼/赌博的 ----
 博彩
