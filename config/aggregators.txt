@@ -1,0 +1,53 @@
+# ============================================================
+#  候选池：会从这些"公共聚合配置"里自动抽取可直连的 CMS 站点
+# ============================================================
+#  构建时脚本会抓取下面每个 URL，解析其中的 sites 数组，
+#  只取 type=1（JSON CMS 直连，不需要 spider.jar）的站点，
+#  统一验证后再汇总进你自己的源。
+#
+#  这也正是"源会自愈"的原因：别人的单源挂了，但他们的配置里
+#  往往同时挂着几十个 CMS 站，我们把其中还活着的捞出来。
+#
+#  格式：  分组名 | URL | URL | ...
+#  一个分组可以有多个镜像地址，脚本会全部尝试，取第一个成功的。
+#  整行以 # 开头即注释。
+# ============================================================
+
+# ---- 知名作者全集（每个都含几十上百个站，是最肥的池子）----
+qist        | https://raw.githubusercontent.com/qist/tvbox/master/jsm.json
+qist备用    | https://cdn.jsdelivr.net/gh/qist/tvbox@master/jsm.json
+
+gaotianliuyun | https://raw.githubusercontent.com/gaotianliuyun/gao/master/0821.json
+gao备用       | https://cdn.jsdelivr.net/gh/gaotianliuyun/gao@master/0821.json
+gao0827       | https://raw.githubusercontent.com/gaotianliuyun/gao/master/0827.json
+gao0826       | https://raw.githubusercontent.com/gaotianliuyun/gao/master/0826.json
+
+TVSpider    | https://raw.githubusercontent.com/jadehh/TVSpider/main/json/TVBox.json
+CatOpen     | https://raw.githubusercontent.com/jadehh/TVSpider/main/json/CatOpen.json
+
+apidb       | https://raw.githubusercontent.com/lubin776/tvbox-api-backup/main/config.json
+apidb1      | https://raw.githubusercontent.com/lubin776/tvbox-api-backup/main/cy/站点1.json
+apidb2      | https://raw.githubusercontent.com/lubin776/tvbox-api-backup/main/cy/站点2.json
+apidb3      | https://raw.githubusercontent.com/lubin776/tvbox-api-backup/main/cy/站点3.json
+
+tvbox18     | https://raw.githubusercontent.com/qirenzhidao/tvbox18/main/XYQTVBox/tvbox.json
+yangxiaoge  | https://raw.githubusercontent.com/yangxiaoge/tvbox_cust/master/tvbox/fongmi_config.json
+
+# ---- 单仓聚合（这些就是常说的"点播单源"，域名换得最勤）----
+ysc-feimao      | https://raw.githubusercontent.com/Lightconer/tvbox-ysc-config/main/output/feimao.json
+ysc-fantaiying  | https://raw.githubusercontent.com/Lightconer/tvbox-ysc-config/main/output/shiguang.json
+ysc-xiaoma      | https://raw.githubusercontent.com/Lightconer/tvbox-ysc-config/main/output/xiaoma.json
+ysc-ouge        | https://raw.githubusercontent.com/Lightconer/tvbox-ysc-config/main/output/ouge.json
+ysc-4k          | https://raw.githubusercontent.com/Lightconer/tvbox-ysc-config/main/output/4k.json
+ysc-he           | https://raw.githubusercontent.com/Lightconer/tvbox-ysc-config/main/output/xiaohezi.json
+ysc-wangerxiao  | https://raw.githubusercontent.com/Lightconer/tvbox-ysc-config/main/output/wangerxiao.json
+ysc-laoliubei   | https://raw.githubusercontent.com/Lightconer/tvbox-ysc-config/main/output/laoliubei.json
+ysc-tinghao     | https://raw.githubusercontent.com/Lightconer/tvbox-ysc-config/main/output/tinghao.json
+ysc-all         | https://raw.githubusercontent.com/Lightconer/tvbox-ysc-config/main/output/单仓聚合.json
+
+# ---- 直接的单源地址（能拉到就直接解析）----
+# 注意：域名经常变，挂了不影响构建，只是这个池子暂时没货
+direct-feimao   | https://6296.kstore.vip/facat.json
+direct-fantaiying | http://fty.xxooo.cf/tv
+direct-wangerxiao | https://9280.kstore.space/aiwex.json
+direct-xiaoya   | https://raw.liucn.cc/box/m.json

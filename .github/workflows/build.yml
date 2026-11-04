@@ -1,0 +1,78 @@
+name: 每周更新点播单源
+
+# 每周一 06:00 (UTC+8) 自动跑一次。
+# 想改时间：改下面这行 cron。GitHub 用 UTC，北京时间要减 8 小时。
+#   北京时间 周一 06:00  →  UTC 周日 22:00
+on:
+  schedule:
+    - cron: "0 22 * * 0"
+  workflow_dispatch:        # 也可以在 Actions 页面手动点一下立即跑
+  push:
+    branches: [main, master]
+    paths:                  # 改了生成脚本或配置就立刻重建一次
+      - "build.py"
+      - "config/**"
+      - "scripts/**"
+      - ".github/workflows/build.yml"
+
+# 需要写回仓库，所以要有写权限
+permissions:
+  contents: write
+
+concurrency:
+  group: build-tvbox
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: 检出仓库
+        uses: actions/checkout@v4
+
+      - name: 安装 Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # 构建脚本只用标准库，不需要 pip install。
+      # 这样 CI 永远不会因为依赖装不上而失败。
+
+      - name: 构建源
+        env:
+          # 用内置 token 调 GitHub API，限速从 60 次/小时提到 5000 次/小时，
+          # 候选池的自动检索质量会明显更好。
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PYTHONIOENCODING: utf-8
+          PYTHONUTF8: "1"
+        run: python build.py
+
+      - name: 打印体检摘要
+        if: always()
+        env:
+          PYTHONIOENCODING: utf-8
+          PYTHONUTF8: "1"
+        run: python scripts/summary.py
+
+      - name: 提交更新
+        run: |
+          set -e
+          git config user.name  "tvbox-bot"
+          git config user.email "tvbox-bot@users.noreply.github.com"
+
+          if [ ! -f dist/tvbox.json ]; then
+            echo "没有生成 dist/tvbox.json，跳过提交"
+            exit 0
+          fi
+
+          git add dist/
+          if git diff --cached --quiet; then
+            echo "本周没有变化，跳过提交"
+            exit 0
+          fi
+
+          ALIVE=$(python -c "import json;print(json.load(open('dist/status.json',encoding='utf-8'))['alive'])" 2>/dev/null || echo "?")
+          git commit -m "自动更新: $(date -u '+%Y-%m-%d') 存活 ${ALIVE} 个站点"
+          git push
