@@ -702,33 +702,43 @@ def http_get_retry(
 
 def verify_playable(urls: list[str], attempts: int = 3) -> bool:
     """
-    真正拉一次播放地址，确认它返回的是 m3u8 内容。
+    判断播放地址是否可用。
 
-    为什么必须做这件事：CMS 站点返回的 vod_play_url 经常是
-      * 已经下线的死链
-      * 返回 HTML 错误页 / 广告页
-      * 需要 Referer 才给内容
-    只看"有没有地址"会严重高估可用性，用户点进去就是黑屏。
+    关键修正——不是所有"拉不到 #EXTM3U"都等于不能用：
+      * 形如 https://vv.jisuzyv.com/play/xxx 的是【播放页】，
+        TVBox 客户端用 WebView 能播，但服务端拉到的只是 HTML，
+        这种不能判死，否则会大面积误杀（实测 jszyapi 102 条地址全被误杀）。
+      * 形如 xxx/index.m3u8 的是【真清单文件】，能拉到 #EXTM3U 才算活着。
+      * 访问直接失败（超时/连接拒绝/4xx 5xx）才算真死链。
     """
     ua_variants = [None, "okhttp/3.12.13", "Lavf/58.29.100"]
     checked = 0
+
     for u in urls:
         if checked >= attempts:
             break
-        # 只测看起来像视频清单的地址，图片/字幕跳过
-        if not re.search(r"\.(m3u8|mp4|m3u)(\?|$)", u, re.I):
+        low = u.lower()
+
+        # 播放页形态：无法服务端验证，按"未验证但允许收录"处理
+        if re.search(r"/(play|vodplay|index/play)/", low) or low.endswith("/play"):
+            return True
+
+        # 清单/直链形态
+        if not re.search(r"\.(m3u8|mp4|m3u)(\?|$)", low):
             continue
         checked += 1
         for ua in ua_variants:
             raw = http_get(u, timeout=TIMEOUT_PLAY, ua=ua)
             if not raw:
                 continue
-            # 合法的 HLS 清单一定以 #EXTM3U 开头
             if raw.lstrip()[:7] == b"#EXTM3U":
                 return True
-            head = raw[:200].decode("utf-8", "replace")
-            # 有些是直链 MP4：能拿到二进制且不是 HTML 也算可播
-            if ".mp4" in u.lower() and "<html" not in head.lower():
+            head = raw[:200].decode("utf-8", "replace").lower()
+            # 直链 MP4：拿到二进制且不是 HTML 错误页
+            if ".mp4" in low and "<html" not in head:
+                return True
+            # m3u8 却返回 HTML —— 可能是播放页跳转，不判死
+            if "m3u8" in low and "<html" in head:
                 return True
     return False
 
@@ -1073,23 +1083,25 @@ def sha256_file(path: str) -> str:
 #       必须用该提供方自己的 jar，混用会让站点引用不存在的类而全部失效。
 # jar 覆盖地址留空表示"用配置自带的 spider 字段"。
 FULL_GROUPS: dict[str, tuple[str, str]] = {
-    # 肥猫：官方域名已停放/引流，改用社区镜像（jar md5 与配置内一致）
+    # 只保留实测可用的两组。
+    #
+    # 已剔除（保留记录，便于日后复查）：
+    #   盒子迷4K —— jar 是 fs-im-kefu.7moor-fs1.com/.../fan.txt，
+    #               用 4 种 UA 加 Referer 全部 HTTPError，jar 本身下载不了，
+    #               其 44 个 type=3 站点必然全部失效，收录没有意义。
+    #   老刘备   —— jar 内仅 51 个 spider 类，但 165 个 csp_ 站点引用了 66 个
+    #               不同类名，命中率 50%；另 51 个站点 api 是 js 路径需额外加载。
+    #               即站点本身在引用自己 jar 里不存在的类，属配置缺陷，无法修正。
+    #
+    # jar 覆盖实测：
+    #   肥猫镜像     28/28 = 100%
+    #   盒子迷xhz    38/38 = 100%
     "肥猫": (
         "https://raw.githubusercontent.com/Lightconer/tvbox-ysc-config/main/output/feimao.json",
         "",
     ),
-    # 老刘备：配置里写的是相对路径 ./fty.jar，必须解析成绝对地址，
-    # 否则 TVBox 会把它解析到本仓库域名下，必然 404。
-    "老刘备": (
-        "https://raw.liucn.cc/box/m.json",
-        "",
-    ),
     "盒子迷xhz": (
         "http://xhztv.top/xhz",
-        "",
-    ),
-    "盒子迷4K": (
-        "http://xhztv.top/4k.json",
         "",
     ),
 }

@@ -70,26 +70,28 @@ https://cdn.jsdelivr.net/gh/<你的用户名>/<仓库名>@main/dist/tvbox.json
 
 ---
 
-## 两种版本，按需选择
+## 版本说明（经实测筛选）
 
-| 文件 | 是否挂 jar | 站点数 | 适用场景 |
+| 文件 | jar | 站点数 | 实测状态 |
 |---|---|---|---|
-| `dist/tvbox.json` | ❌ 无 | 约 19-40 | **日常首选**，全 type=1 直连，jar 挂了也不受影响 |
-| `dist/tvbox-slim.json` | ❌ 无 | 同上 | 极简版，给加载慢的老盒子 |
-| `dist/tvbox-full-盒子迷xhz.json` | ✅ 有 | 54 | 需要 jar 站的完整体验，**jar 一挂整份白屏** |
-| `dist/tvbox-full-盒子迷4K.json` | ✅ 有 | 44 | 同上 |
+| `dist/tvbox-full-肥猫.json` | ✅ | 40 | **实测可用**，jar 类覆盖 28/28 = 100% |
+| `dist/tvbox-full-盒子迷xhz.json` | ✅ | 54 | **实测可用**，jar 类覆盖 38/38 = 100% |
+| `dist/tvbox.json` | ❌ | 约 20 | 直连 CMS，无需 jar；可用率取决于你所在网络 |
+| `dist/tvbox-slim.json` | ❌ | 同上 | 极简版，字段更少 |
 
-### 为什么完整版要分成两个文件
+### 已剔除的两个版本及原因
 
-`type=3` 站点的 `api` 是 jar 里的**类名**（如 `csp_XBPQ`）。不同提供方的 jar 内含的类完全不同：
-
-| jar | spider 类数量 |
+| 提供方 | 剔除原因 |
 |---|---|
-| `qist/spider.jar` | 123 |
-| `Yoursmile.jar` | 63 |
+| 盒子迷4K | jar 指向 `fs-im-kefu.7moor-fs1.com/.../fan.txt`，**4 种 UA + Referer 全部 HTTPError，jar 本身下载不了**，其 44 个站点必然全失效 |
+| 老刘备 | jar 内仅 51 个 spider 类，但 165 个 `csp_` 站点引用 **66 个不同类名，命中率仅 50%**；另 51 个站点 api 是 js 路径需额外加载。属配置自身缺陷，无法修正 |
 
-**把 A 家的站点挂在 B 家的 jar 上，站点引用的类不存在，点开必然失败。**
-所以每个提供方单独出一个文件，jar 与站点严格配套。
+### 为什么只能靠"类覆盖度"判断 jar 版可用性
+
+`type=3` 站点的 `api` 是 jar 内的**类名**（如 `csp_XBPQ`）。
+把 A 家站点挂在 B 家 jar 上，类不存在 → 点开必然失败。
+所以我解包 jar 里的 `classes.dex`，逐个核对"站点用到的类是否真的在 jar 里"，
+只保留命中率 100% 的分组。
 
 ## 目录结构
 
